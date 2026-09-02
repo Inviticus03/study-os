@@ -1,0 +1,6 @@
+{
+  "name": "StudyOS",
+  "description": "Modern personal Study Tracker & Study Timer with intelligent habit analytics, streak tracking, daily planner, and AI Study Coach.",
+  "requestFramePermissions": ["notifications"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
