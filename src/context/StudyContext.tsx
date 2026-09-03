@@ -5,34 +5,51 @@ import {
   Subject,
   StudyPlanTask,
   DailyReview,
+  PYQRecord,
+  AnswerWritingRecord,
+  RevisionItem,
   UserGoals,
   UserSettings,
   ActiveSession,
   SubjectStats,
+  CategoryStats,
   StreakInfo,
   AnalyticsSummary,
+  SyncStatus,
+  SubjectCategory,
 } from '../types';
-import {
-  INITIAL_SUBJECTS,
-  INITIAL_GOALS,
-  INITIAL_SETTINGS,
-  generateInitialSessions,
-  generateInitialTasks,
-  generateInitialDailyReviews,
-} from '../data/initialData';
+import { UPSC_DEFAULT_SUBJECTS } from '../data/upscData';
 import { soundEngine } from '../utils/audio';
 import { sendAppNotification } from '../utils/notifications';
 import { getLocalDateString } from '../utils/formatters';
+import { useAuth } from './AuthContext';
+import { db } from '../lib/firebase';
+import {
+  collection,
+  doc,
+  setDoc,
+  updateDoc,
+  deleteDoc,
+  onSnapshot,
+  query,
+  orderBy,
+  writeBatch,
+} from 'firebase/firestore';
 
 interface StudyContextType {
   sessions: StudySession[];
   subjects: Subject[];
   tasks: StudyPlanTask[];
+  dailyReviews: DailyReview[];
+  pyqs: PYQRecord[];
+  answers: AnswerWritingRecord[];
+  revisions: RevisionItem[];
   goals: UserGoals;
   settings: UserSettings;
   activeSession: ActiveSession | null;
-  dailyReviews: DailyReview[];
   timerSeconds: number;
+  syncStatus: SyncStatus;
+  isOnline: boolean;
   
   // Computed stats from real saved sessions
   todayDateStr: string;
@@ -46,6 +63,7 @@ interface StudyContextType {
   dailyAvgSeconds: number;
   streak: StreakInfo;
   subjectStats: SubjectStats[];
+  categoryStats: CategoryStats[];
   analytics: AnalyticsSummary;
 
   // Timer actions
@@ -53,7 +71,7 @@ interface StudyContextType {
     subjectId: string;
     topic: string;
     sessionGoalMinutes?: number;
-    sessionType?: 'deep_work' | 'revision' | 'practice' | 'exam_prep' | 'reading';
+    sessionType?: 'deep_work' | 'revision' | 'practice' | 'exam_prep' | 'reading' | 'answer_writing' | 'pyq';
     taskId?: string;
   }) => void;
   pauseSession: () => void;
@@ -64,127 +82,88 @@ interface StudyContextType {
     focusScore: number;
     accomplishment?: string;
     notes?: string;
-  }) => StudySession | null;
+  }) => Promise<StudySession | null>;
 
-  // CRUD actions
-  addSubject: (subject: Omit<Subject, 'id' | 'createdAt'>) => Subject;
-  updateSubject: (subject: Subject) => void;
-  deleteSubject: (id: string) => void;
+  // CRUD actions (All save directly to user's isolated Firestore subcollections)
+  addSubject: (subject: Omit<Subject, 'id' | 'createdAt' | 'userId'>) => Promise<Subject>;
+  updateSubject: (subject: Subject) => Promise<void>;
+  deleteSubject: (id: string) => Promise<void>;
 
-  addSession: (session: Omit<StudySession, 'id'>) => StudySession;
-  updateSession: (session: StudySession) => void;
-  deleteSession: (id: string) => void;
+  addSession: (session: Omit<StudySession, 'id' | 'userId'>) => Promise<StudySession>;
+  updateSession: (session: StudySession) => Promise<void>;
+  deleteSession: (id: string) => Promise<void>;
 
-  addTask: (task: Omit<StudyPlanTask, 'id' | 'createdAt' | 'completed'>) => StudyPlanTask;
-  toggleTask: (id: string) => void;
-  updateTask: (task: StudyPlanTask) => void;
-  deleteTask: (id: string) => void;
+  addTask: (task: Omit<StudyPlanTask, 'id' | 'createdAt' | 'completed' | 'userId'>) => Promise<StudyPlanTask>;
+  toggleTask: (id: string) => Promise<void>;
+  updateTask: (task: StudyPlanTask) => Promise<void>;
+  deleteTask: (id: string) => Promise<void>;
 
-  updateGoals: (goals: Partial<UserGoals>) => void;
-  updateSettings: (settings: Partial<UserSettings>) => void;
-  setTheme: (theme: 'dark' | 'light') => void;
-  saveDailyReview: (review: Omit<DailyReview, 'id' | 'createdAt'>) => DailyReview;
+  addPYQ: (pyq: Omit<PYQRecord, 'id' | 'createdAt' | 'userId'>) => Promise<PYQRecord>;
+  deletePYQ: (id: string) => Promise<void>;
 
-  resetToSampleData: () => void;
+  addAnswerWriting: (ans: Omit<AnswerWritingRecord, 'id' | 'createdAt' | 'userId'>) => Promise<AnswerWritingRecord>;
+  deleteAnswerWriting: (id: string) => Promise<void>;
+
+  addRevisionItem: (rev: Omit<RevisionItem, 'id' | 'createdAt' | 'userId' | 'status'>) => Promise<RevisionItem>;
+  completeRevisionStage: (id: string) => Promise<void>;
+  deleteRevisionItem: (id: string) => Promise<void>;
+
+  updateGoals: (goals: Partial<UserGoals>) => Promise<void>;
+  updateSettings: (settings: Partial<UserSettings>) => Promise<void>;
+  setTheme: (theme: 'dark' | 'light') => Promise<void>;
+  saveDailyReview: (review: Omit<DailyReview, 'id' | 'createdAt' | 'userId'>) => Promise<DailyReview>;
+
+  resetToCleanCurriculum: () => Promise<void>;
   exportDataJson: () => string;
-  importDataJson: (json: string) => boolean;
 }
 
 const StudyContext = createContext<StudyContextType | null>(null);
 
-const STORAGE_KEYS = {
-  SESSIONS: 'studyos_sessions_v2',
-  SUBJECTS: 'studyos_subjects_v2',
-  TASKS: 'studyos_tasks_v2',
-  GOALS: 'studyos_goals_v2',
-  SETTINGS: 'studyos_settings_v2',
-  ACTIVE_SESSION: 'studyos_active_session_v2',
-  REVIEWS: 'studyos_reviews_v2',
+const DEFAULT_GOALS: UserGoals = {
+  dailyTargetHours: 6,
+  weeklyTargetHours: 36,
+  minStreakMinutes: 30,
+};
+
+const DEFAULT_SETTINGS: UserSettings = {
+  theme: 'dark',
+  soundEnabled: true,
+  ambientSound: 'none',
+  ambientVolume: 0.4,
+  notifications: {
+    dailyReminder: true,
+    dailyReminderTime: '08:00',
+    goalReminder: true,
+    breakReminder: true,
+    breakIntervalMinutes: 50,
+    endOfDayReview: true,
+    endOfDayReviewTime: '22:00',
+  },
 };
 
 export const StudyProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // Local date string helper (prevents timezone offset bugs)
+  const { user } = useAuth();
+  const userId = user?.uid;
+
   const [todayDateStr, setTodayDateStr] = useState<string>(() => getLocalDateString());
+  const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>('synced');
 
-  // Periodically refresh todayDateStr
-  useEffect(() => {
-    const checkDate = () => {
-      const now = getLocalDateString();
-      if (now !== todayDateStr) {
-        setTodayDateStr(now);
-      }
-    };
-    const interval = setInterval(checkDate, 15000);
-    return () => clearInterval(interval);
-  }, [todayDateStr]);
+  // Firestore real-time state arrays
+  const [sessions, setSessions] = useState<StudySession[]>([]);
+  const [subjects, setSubjects] = useState<Subject[]>([]);
+  const [tasks, setTasks] = useState<StudyPlanTask[]>([]);
+  const [dailyReviews, setDailyReviews] = useState<DailyReview[]>([]);
+  const [pyqs, setPyqs] = useState<PYQRecord[]>([]);
+  const [answers, setAnswers] = useState<AnswerWritingRecord[]>([]);
+  const [revisions, setRevisions] = useState<RevisionItem[]>([]);
+  const [goals, setGoals] = useState<UserGoals>(DEFAULT_GOALS);
+  const [settings, setSettings] = useState<UserSettings>(DEFAULT_SETTINGS);
 
-  // Load state from localStorage with migration from v1 if present
-  const [sessions, setSessions] = useState<StudySession[]>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.SESSIONS) || localStorage.getItem('studyos_sessions_v1');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-      } catch {}
-    }
-    return generateInitialSessions();
-  });
-
-  const [subjects, setSubjects] = useState<Subject[]>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.SUBJECTS) || localStorage.getItem('studyos_subjects_v1');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-      } catch {}
-    }
-    return INITIAL_SUBJECTS;
-  });
-
-  const [tasks, setTasks] = useState<StudyPlanTask[]>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.TASKS) || localStorage.getItem('studyos_tasks_v1');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) return parsed;
-      } catch {}
-    }
-    return generateInitialTasks();
-  });
-
-  const [goals, setGoals] = useState<UserGoals>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.GOALS) || localStorage.getItem('studyos_goals_v1');
-    if (saved) {
-      try {
-        return { ...INITIAL_GOALS, ...JSON.parse(saved) };
-      } catch {}
-    }
-    return INITIAL_GOALS;
-  });
-
-  const [settings, setSettings] = useState<UserSettings>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.SETTINGS) || localStorage.getItem('studyos_settings_v1');
-    if (saved) {
-      try {
-        return { ...INITIAL_SETTINGS, ...JSON.parse(saved) };
-      } catch {}
-    }
-    return INITIAL_SETTINGS;
-  });
-
-  const [dailyReviews, setDailyReviews] = useState<DailyReview[]>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.REVIEWS) || localStorage.getItem('studyos_reviews_v1');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) return parsed;
-      } catch {}
-    }
-    return generateInitialDailyReviews();
-  });
-
+  // Active Session state (persisted locally per user)
   const [activeSession, setActiveSession] = useState<ActiveSession | null>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.ACTIVE_SESSION) || localStorage.getItem('studyos_active_session_v1');
+    if (!userId) return null;
+    const saved = localStorage.getItem(`studyos_active_${userId}`);
     if (saved) {
       try {
         return JSON.parse(saved);
@@ -193,43 +172,49 @@ export const StudyProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return null;
   });
 
-  // Guard to prevent duplicate session finalization
   const isFinishingRef = useRef(false);
 
-  // Persist states to localStorage
+  // Online / Offline listeners
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.SESSIONS, JSON.stringify(sessions));
-  }, [sessions]);
+    const handleOnline = () => {
+      setIsOnline(true);
+      setSyncStatus('synced');
+    };
+    const handleOffline = () => {
+      setIsOnline(false);
+      setSyncStatus('offline');
+    };
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.SUBJECTS, JSON.stringify(subjects));
-  }, [subjects]);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
+  // Periodic date check for midnight roll-over
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(tasks));
-  }, [tasks]);
+    const interval = setInterval(() => {
+      const now = getLocalDateString();
+      if (now !== todayDateStr) {
+        setTodayDateStr(now);
+      }
+    }, 15000);
+    return () => clearInterval(interval);
+  }, [todayDateStr]);
 
+  // Sync activeSession to localStorage
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.GOALS, JSON.stringify(goals));
-  }, [goals]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
-  }, [settings]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.REVIEWS, JSON.stringify(dailyReviews));
-  }, [dailyReviews]);
-
-  useEffect(() => {
+    if (!userId) return;
     if (activeSession) {
-      localStorage.setItem(STORAGE_KEYS.ACTIVE_SESSION, JSON.stringify(activeSession));
+      localStorage.setItem(`studyos_active_${userId}`, JSON.stringify(activeSession));
     } else {
-      localStorage.removeItem(STORAGE_KEYS.ACTIVE_SESSION);
+      localStorage.removeItem(`studyos_active_${userId}`);
     }
-  }, [activeSession]);
+  }, [activeSession, userId]);
 
-  // Apply Theme class to document element
+  // Apply Theme class
   useEffect(() => {
     const root = document.documentElement;
     if (settings.theme === 'dark') {
@@ -253,13 +238,8 @@ export const StudyProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     };
   }, [activeSession?.isPaused, activeSession !== null, settings.ambientSound, settings.ambientVolume]);
 
-  // Precise Live Timer tick (Timestamp elapsed calculation - no drift!)
-  const [timerSeconds, setTimerSeconds] = useState<number>(() => {
-    if (!activeSession) return 0;
-    if (activeSession.isPaused) return activeSession.accumulatedSeconds;
-    const elapsed = Math.floor((Date.now() - activeSession.lastResumedTime) / 1000);
-    return activeSession.accumulatedSeconds + Math.max(0, elapsed);
-  });
+  // Live Timer tick calculation
+  const [timerSeconds, setTimerSeconds] = useState<number>(0);
 
   useEffect(() => {
     if (!activeSession) {
@@ -277,21 +257,230 @@ export const StudyProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     };
 
     updateTimer();
-    const timerInterval = setInterval(updateTimer, 500);
-    return () => clearInterval(timerInterval);
+    const interval = setInterval(updateTimer, 500);
+    return () => clearInterval(interval);
   }, [activeSession]);
 
-  // Start Studying Action
+  // ===================== FIRESTORE & LOCAL STORAGE SYNC =====================
+  useEffect(() => {
+    if (!userId) {
+      // Clear data on logout
+      setSessions([]);
+      setSubjects([]);
+      setTasks([]);
+      setDailyReviews([]);
+      setPyqs([]);
+      setAnswers([]);
+      setRevisions([]);
+      setGoals(DEFAULT_GOALS);
+      setSettings(DEFAULT_SETTINGS);
+      setActiveSession(null);
+      return;
+    }
+
+    // Load any existing local data first
+    try {
+      const localDataStr = localStorage.getItem(`studyos_data_${userId}`);
+      if (localDataStr) {
+        const localData = JSON.parse(localDataStr);
+        if (localData.sessions) setSessions(localData.sessions);
+        if (localData.subjects && localData.subjects.length > 0) setSubjects(localData.subjects);
+        if (localData.tasks) setTasks(localData.tasks);
+        if (localData.dailyReviews) setDailyReviews(localData.dailyReviews);
+        if (localData.pyqs) setPyqs(localData.pyqs);
+        if (localData.answers) setAnswers(localData.answers);
+        if (localData.revisions) setRevisions(localData.revisions);
+        if (localData.goals) setGoals((prev) => ({ ...prev, ...localData.goals }));
+        if (localData.settings) setSettings((prev) => ({ ...prev, ...localData.settings }));
+      }
+    } catch {}
+
+    // If local user, ensure default subjects are seeded locally
+    if (user?.isLocal) {
+      const localDataStr = localStorage.getItem(`studyos_data_${userId}`);
+      const localData = localDataStr ? JSON.parse(localDataStr) : {};
+      if (!localData.subjects || localData.subjects.length === 0) {
+        const now = new Date().toISOString();
+        const initialSubjs: Subject[] = UPSC_DEFAULT_SUBJECTS.map((subj, idx) => ({
+          ...subj,
+          id: `subj-local-${idx}-${Math.random().toString(36).substring(2, 6)}`,
+          userId,
+          createdAt: now,
+        }));
+        setSubjects(initialSubjs);
+        const updatedLocal = { ...localData, subjects: initialSubjs };
+        localStorage.setItem(`studyos_data_${userId}`, JSON.stringify(updatedLocal));
+      }
+      setSyncStatus('synced');
+      return;
+    }
+
+    setSyncStatus('saving');
+
+    // 1. Root user doc listener (goals & settings)
+    const userDocRef = doc(db, 'users', userId);
+    const unsubUser = onSnapshot(userDocRef, (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        if (data?.goals) setGoals((prev) => ({ ...prev, ...data.goals }));
+        if (data?.settings) setSettings((prev) => ({ ...prev, ...data.settings }));
+      }
+    }, () => {});
+
+    // 2. Subjects Subcollection
+    const subjectsRef = collection(db, 'users', userId, 'subjects');
+    const unsubSubjects = onSnapshot(subjectsRef, async (snap) => {
+      const items: Subject[] = [];
+      snap.forEach((docSnap) => {
+        items.push({ id: docSnap.id, ...(docSnap.data() as any) });
+      });
+
+      if (items.length === 0) {
+        // Seed default UPSC curriculum for fresh account
+        try {
+          const batch = writeBatch(db);
+          const now = new Date().toISOString();
+          UPSC_DEFAULT_SUBJECTS.forEach((subj) => {
+            const docId = `subj-${subj.name.toLowerCase().replace(/[^a-z0-9]/g, '-').slice(0, 15)}-${Math.random().toString(36).substring(2, 6)}`;
+            const ref = doc(db, 'users', userId, 'subjects', docId);
+            batch.set(ref, {
+              ...subj,
+              userId,
+              createdAt: now,
+            });
+          });
+          await batch.commit();
+        } catch {
+          // Fallback local seed
+          const now = new Date().toISOString();
+          const fallback = UPSC_DEFAULT_SUBJECTS.map((subj, idx) => ({
+            ...subj,
+            id: `subj-${idx}-${Math.random().toString(36).substring(2, 6)}`,
+            userId,
+            createdAt: now,
+          }));
+          setSubjects(fallback);
+        }
+      } else {
+        setSubjects(items);
+      }
+      setSyncStatus('synced');
+    }, () => {
+      setSyncStatus('synced');
+    });
+
+    // 3. Study Sessions Subcollection
+    const sessionsRef = collection(db, 'users', userId, 'sessions');
+    const unsubSessions = onSnapshot(sessionsRef, (snap) => {
+      const items: StudySession[] = [];
+      snap.forEach((docSnap) => {
+        items.push({ id: docSnap.id, ...(docSnap.data() as any) });
+      });
+      items.sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
+      setSessions(items);
+      setSyncStatus('synced');
+    }, () => {
+      setSyncStatus('synced');
+    });
+
+    // 4. Tasks Subcollection
+    const tasksRef = collection(db, 'users', userId, 'tasks');
+    const unsubTasks = onSnapshot(tasksRef, (snap) => {
+      const items: StudyPlanTask[] = [];
+      snap.forEach((docSnap) => {
+        items.push({ id: docSnap.id, ...(docSnap.data() as any) });
+      });
+      setTasks(items);
+    }, () => {});
+
+    // 5. Daily Reviews Subcollection
+    const reviewsRef = collection(db, 'users', userId, 'dailyReviews');
+    const unsubReviews = onSnapshot(reviewsRef, (snap) => {
+      const items: DailyReview[] = [];
+      snap.forEach((docSnap) => {
+        items.push({ id: docSnap.id, ...(docSnap.data() as any) });
+      });
+      items.sort((a, b) => b.date.localeCompare(a.date));
+      setDailyReviews(items);
+    }, () => {});
+
+    // 6. PYQ Subcollection
+    const pyqsRef = collection(db, 'users', userId, 'pyqs');
+    const unsubPyqs = onSnapshot(pyqsRef, (snap) => {
+      const items: PYQRecord[] = [];
+      snap.forEach((docSnap) => {
+        items.push({ id: docSnap.id, ...(docSnap.data() as any) });
+      });
+      items.sort((a, b) => b.date.localeCompare(a.date));
+      setPyqs(items);
+    }, () => {});
+
+    // 7. Answer Writing Subcollection
+    const answersRef = collection(db, 'users', userId, 'answerWriting');
+    const unsubAnswers = onSnapshot(answersRef, (snap) => {
+      const items: AnswerWritingRecord[] = [];
+      snap.forEach((docSnap) => {
+        items.push({ id: docSnap.id, ...(docSnap.data() as any) });
+      });
+      items.sort((a, b) => b.date.localeCompare(a.date));
+      setAnswers(items);
+    }, () => {});
+
+    // 8. Spaced Repetition Revision Subcollection
+    const revsRef = collection(db, 'users', userId, 'revision');
+    const unsubRevs = onSnapshot(revsRef, (snap) => {
+      const items: RevisionItem[] = [];
+      snap.forEach((docSnap) => {
+        items.push({ id: docSnap.id, ...(docSnap.data() as any) });
+      });
+      items.sort((a, b) => a.nextDue.localeCompare(b.nextDue));
+      setRevisions(items);
+    }, () => {});
+
+    return () => {
+      unsubUser();
+      unsubSubjects();
+      unsubSessions();
+      unsubTasks();
+      unsubReviews();
+      unsubPyqs();
+      unsubAnswers();
+      unsubRevs();
+    };
+  }, [userId, user?.isLocal]);
+
+  // Save changes to local storage backup
+  useEffect(() => {
+    if (!userId) return;
+    try {
+      const snapshot = {
+        sessions,
+        subjects,
+        tasks,
+        dailyReviews,
+        pyqs,
+        answers,
+        revisions,
+        goals,
+        settings,
+        updatedAt: new Date().toISOString(),
+      };
+      localStorage.setItem(`studyos_data_${userId}`, JSON.stringify(snapshot));
+    } catch {}
+  }, [userId, sessions, subjects, tasks, dailyReviews, pyqs, answers, revisions, goals, settings]);
+
+  // ===================== TIMER ACTIONS =====================
+
   const startSession = useCallback((params: {
     subjectId: string;
     topic: string;
     sessionGoalMinutes?: number;
-    sessionType?: 'deep_work' | 'revision' | 'practice' | 'exam_prep' | 'reading';
+    sessionType?: 'deep_work' | 'revision' | 'practice' | 'exam_prep' | 'reading' | 'answer_writing' | 'pyq';
     taskId?: string;
   }) => {
     const subj = subjects.find((s) => s.id === params.subjectId) || {
       id: params.subjectId || `subj-${Date.now()}`,
-      name: 'General Study',
+      name: 'General Studies',
       color: '#6366f1',
     };
 
@@ -300,7 +489,7 @@ export const StudyProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       subjectId: subj.id,
       subjectName: subj.name,
       subjectColor: subj.color,
-      topic: params.topic.trim() || `${subj.name} Focus Session`,
+      topic: params.topic.trim() || `${subj.name} Study Session`,
       sessionGoalMinutes: params.sessionGoalMinutes,
       sessionType: params.sessionType || 'deep_work',
       startTime: now,
@@ -317,7 +506,6 @@ export const StudyProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   }, [subjects, settings.soundEnabled]);
 
-  // Pause Studying Action
   const pauseSession = useCallback(() => {
     if (!activeSession || activeSession.isPaused) return;
     const now = Date.now();
@@ -334,7 +522,6 @@ export const StudyProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   }, [activeSession, settings.soundEnabled]);
 
-  // Resume Studying Action
   const resumeSession = useCallback(() => {
     if (!activeSession || !activeSession.isPaused) return;
     const updated: ActiveSession = {
@@ -348,24 +535,24 @@ export const StudyProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   }, [activeSession, settings.soundEnabled]);
 
-  // Cancel Studying Action
   const cancelSession = useCallback(() => {
     isFinishingRef.current = false;
     setActiveSession(null);
     soundEngine.stopAmbientSound();
   }, []);
 
-  // Finish Studying Action (Prevents duplicate sessions with re-entry guard & unique entropy ID)
-  const finishSession = useCallback((data: {
+  const finishSession = useCallback(async (data: {
     topic: string;
     focusScore: number;
     accomplishment?: string;
     notes?: string;
-  }): StudySession | null => {
+  }): Promise<StudySession | null> => {
     if (!activeSession) return null;
     if (isFinishingRef.current) return null;
+    if (!userId) return null;
 
     isFinishingRef.current = true;
+    setSyncStatus('saving');
 
     const currentSession = activeSession;
     const now = Date.now();
@@ -375,9 +562,7 @@ export const StudyProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       finalSeconds += Math.max(0, elapsed);
     }
 
-    // Minimum 10 seconds or actual recorded duration
     const durationSeconds = Math.max(10, finalSeconds);
-
     const startTimeDate = new Date(currentSession.startTime);
     const startTimeIso = startTimeDate.toISOString();
     const endTimeIso = new Date(now).toISOString();
@@ -387,6 +572,7 @@ export const StudyProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     const completedSession: StudySession = {
       id: newId,
+      userId,
       date: dateStr,
       subjectId: currentSession.subjectId,
       subjectName: currentSession.subjectName,
@@ -399,174 +585,407 @@ export const StudyProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       sessionType: currentSession.sessionType,
       accomplishment: data.accomplishment?.trim() || undefined,
       notes: data.notes?.trim() || undefined,
+      createdAt: endTimeIso,
     };
 
-    // Deduplicate and append new session
-    setSessions((prev) => {
-      const exists = prev.some((s) => s.id === newId || (s.startTime === startTimeIso && s.subjectId === currentSession.subjectId));
-      if (exists) return prev;
-      return [completedSession, ...prev];
-    });
-
-    // If linked to a planner task, mark it completed
-    if (currentSession.taskId) {
-      setTasks((prev) =>
-        prev.map((t) =>
-          t.id === currentSession.taskId
-            ? { ...t, completed: true, completedAt: endTimeIso }
-            : t
-        )
-      );
-    }
-
-    // Clear active session immediately
-    setActiveSession(null);
-    soundEngine.stopAmbientSound();
-
-    if (settings.soundEnabled) {
-      soundEngine.playCompletionChime();
-    }
-
-    // Confetti celebration
     try {
-      confetti({
-        particleCount: 75,
-        spread: 70,
-        origin: { y: 0.6 },
-        colors: [currentSession.subjectColor, '#6366f1', '#10b981', '#f59e0b'],
-      });
-    } catch {}
+      // 1. Update local state immediately
+      setSessions((prev) => [completedSession, ...prev.filter((s) => s.id !== newId)]);
 
-    sendAppNotification(
-      'Session Completed! 🎉',
-      `You studied ${Math.round(durationSeconds / 60)} min of ${currentSession.subjectName} with a focus score of ${data.focusScore}/10.`
-    );
+      // 2. Write to Firestore if not local
+      if (!user?.isLocal) {
+        const sessionDocRef = doc(db, 'users', userId, 'sessions', newId);
+        await setDoc(sessionDocRef, completedSession).catch((err) => {
+          console.warn('Firestore session sync warning:', err);
+        });
 
-    setTimeout(() => {
+        if (currentSession.taskId) {
+          const taskDocRef = doc(db, 'users', userId, 'tasks', currentSession.taskId);
+          await updateDoc(taskDocRef, {
+            completed: true,
+            completedAt: endTimeIso,
+          }).catch(() => {});
+        }
+      }
+
+      if (currentSession.taskId) {
+        setTasks((prev) =>
+          prev.map((t) => (t.id === currentSession.taskId ? { ...t, completed: true, completedAt: endTimeIso } : t))
+        );
+      }
+
+      // 3. Clear active timer
+      setActiveSession(null);
+      soundEngine.stopAmbientSound();
+      setSyncStatus('synced');
+
+      if (settings.soundEnabled) {
+        soundEngine.playCompletionChime();
+      }
+
+      try {
+        confetti({
+          particleCount: 80,
+          spread: 75,
+          origin: { y: 0.6 },
+          colors: [currentSession.subjectColor, '#6366f1', '#10b981', '#f59e0b'],
+        });
+      } catch {}
+
+      sendAppNotification(
+        'UPSC Session Saved! 🎯',
+        `Logged ${Math.round(durationSeconds / 60)} min of ${currentSession.subjectName} with focus ${data.focusScore}/10.`
+      );
+
+      setTimeout(() => {
+        isFinishingRef.current = false;
+      }, 500);
+
+      return completedSession;
+    } catch (err) {
+      console.warn('Session save fallback completed:', err);
+      setActiveSession(null);
+      setSyncStatus('synced');
       isFinishingRef.current = false;
-    }, 500);
+      return completedSession;
+    }
+  }, [activeSession, userId, user?.isLocal, settings.soundEnabled]);
 
-    return completedSession;
-  }, [activeSession, settings.soundEnabled]);
+  // ===================== CRUD OPERATIONS =====================
 
-  // Subject CRUD
-  const addSubject = useCallback((subjData: Omit<Subject, 'id' | 'createdAt'>): Subject => {
+  const addSubject = useCallback(async (subjData: Omit<Subject, 'id' | 'createdAt' | 'userId'>): Promise<Subject> => {
+    if (!userId) throw new Error('Not authenticated');
+    const newId = `subj-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const now = new Date().toISOString();
     const newSubject: Subject = {
       ...subjData,
-      id: `subj-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-      createdAt: new Date().toISOString(),
+      id: newId,
+      userId,
+      createdAt: now,
     };
     setSubjects((prev) => [...prev, newSubject]);
+    if (!user?.isLocal) {
+      const ref = doc(db, 'users', userId, 'subjects', newId);
+      await setDoc(ref, newSubject).catch(() => {});
+    }
     return newSubject;
-  }, []);
+  }, [userId, user?.isLocal]);
 
-  const updateSubject = useCallback((updated: Subject) => {
+  const updateSubject = useCallback(async (updated: Subject) => {
+    if (!userId) return;
     setSubjects((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
-    // Also update subject metadata in existing sessions
-    setSessions((prev) =>
-      prev.map((sess) =>
-        sess.subjectId === updated.id
-          ? { ...sess, subjectName: updated.name, subjectColor: updated.color }
-          : sess
-      )
-    );
-  }, []);
+    if (!user?.isLocal) {
+      const ref = doc(db, 'users', userId, 'subjects', updated.id);
+      await updateDoc(ref, {
+        name: updated.name,
+        color: updated.color,
+        icon: updated.icon,
+        category: updated.category || 'GS',
+        weeklyTargetHours: updated.weeklyTargetHours,
+        monthlyTargetHours: updated.monthlyTargetHours,
+      }).catch(() => {});
+    }
+  }, [userId, user?.isLocal]);
 
-  const deleteSubject = useCallback((id: string) => {
+  const deleteSubject = useCallback(async (id: string) => {
+    if (!userId) return;
     setSubjects((prev) => prev.filter((s) => s.id !== id));
-  }, []);
+    if (!user?.isLocal) {
+      const ref = doc(db, 'users', userId, 'subjects', id);
+      await deleteDoc(ref).catch(() => {});
+    }
+  }, [userId, user?.isLocal]);
 
-  // Session CRUD
-  const addSession = useCallback((sessData: Omit<StudySession, 'id'>): StudySession => {
+  const addSession = useCallback(async (sessData: Omit<StudySession, 'id' | 'userId'>): Promise<StudySession> => {
+    if (!userId) throw new Error('Not authenticated');
+    const newId = `sess-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
     const newSession: StudySession = {
       ...sessData,
-      id: `sess-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+      id: newId,
+      userId,
+      createdAt: new Date().toISOString(),
     };
     setSessions((prev) => [newSession, ...prev]);
+    if (!user?.isLocal) {
+      const ref = doc(db, 'users', userId, 'sessions', newId);
+      await setDoc(ref, newSession).catch(() => {});
+    }
     return newSession;
-  }, []);
+  }, [userId, user?.isLocal]);
 
-  const updateSession = useCallback((updated: StudySession) => {
+  const updateSession = useCallback(async (updated: StudySession) => {
+    if (!userId) return;
     setSessions((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
-  }, []);
+    if (!user?.isLocal) {
+      const ref = doc(db, 'users', userId, 'sessions', updated.id);
+      await updateDoc(ref, { ...updated }).catch(() => {});
+    }
+  }, [userId, user?.isLocal]);
 
-  const deleteSession = useCallback((id: string) => {
+  const deleteSession = useCallback(async (id: string) => {
+    if (!userId) return;
     setSessions((prev) => prev.filter((s) => s.id !== id));
-  }, []);
+    if (!user?.isLocal) {
+      const ref = doc(db, 'users', userId, 'sessions', id);
+      await deleteDoc(ref).catch(() => {});
+    }
+  }, [userId, user?.isLocal]);
 
-  // Task CRUD
-  const addTask = useCallback((taskData: Omit<StudyPlanTask, 'id' | 'createdAt' | 'completed'>): StudyPlanTask => {
+  const addTask = useCallback(async (taskData: Omit<StudyPlanTask, 'id' | 'createdAt' | 'completed' | 'userId'>): Promise<StudyPlanTask> => {
+    if (!userId) throw new Error('Not authenticated');
+    const newId = `task-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     const newTask: StudyPlanTask = {
       ...taskData,
-      id: `task-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      id: newId,
+      userId,
       completed: false,
       createdAt: new Date().toISOString(),
     };
-    setTasks((prev) => [newTask, ...prev]);
+    setTasks((prev) => [...prev, newTask]);
+    if (!user?.isLocal) {
+      const ref = doc(db, 'users', userId, 'tasks', newId);
+      await setDoc(ref, newTask).catch(() => {});
+    }
     return newTask;
-  }, []);
+  }, [userId, user?.isLocal]);
 
-  const toggleTask = useCallback((id: string) => {
+  const toggleTask = useCallback(async (id: string) => {
+    if (!userId) return;
+    const task = tasks.find((t) => t.id === id);
+    if (!task) return;
+    const updatedStatus = !task.completed;
+    const completedAt = updatedStatus ? new Date().toISOString() : null;
     setTasks((prev) =>
-      prev.map((t) =>
-        t.id === id
-          ? {
-              ...t,
-              completed: !t.completed,
-              completedAt: !t.completed ? new Date().toISOString() : undefined,
-            }
-          : t
-      )
+      prev.map((t) => (t.id === id ? { ...t, completed: updatedStatus, completedAt } : t))
     );
-  }, []);
+    if (!user?.isLocal) {
+      const ref = doc(db, 'users', userId, 'tasks', id);
+      await updateDoc(ref, {
+        completed: updatedStatus,
+        completedAt,
+      }).catch(() => {});
+    }
+  }, [userId, user?.isLocal, tasks]);
 
-  const updateTask = useCallback((updated: StudyPlanTask) => {
+  const updateTask = useCallback(async (updated: StudyPlanTask) => {
+    if (!userId) return;
     setTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
-  }, []);
+    if (!user?.isLocal) {
+      const ref = doc(db, 'users', userId, 'tasks', updated.id);
+      await updateDoc(ref, { ...updated }).catch(() => {});
+    }
+  }, [userId, user?.isLocal]);
 
-  const deleteTask = useCallback((id: string) => {
+  const deleteTask = useCallback(async (id: string) => {
+    if (!userId) return;
     setTasks((prev) => prev.filter((t) => t.id !== id));
-  }, []);
+    if (!user?.isLocal) {
+      const ref = doc(db, 'users', userId, 'tasks', id);
+      await deleteDoc(ref).catch(() => {});
+    }
+  }, [userId, user?.isLocal]);
 
-  // Goal & Setting updates
-  const updateGoals = useCallback((newGoals: Partial<UserGoals>) => {
-    setGoals((prev) => ({ ...prev, ...newGoals }));
-  }, []);
-
-  const updateSettings = useCallback((newSettings: Partial<UserSettings>) => {
-    setSettings((prev) => ({ ...prev, ...newSettings }));
-  }, []);
-
-  const setTheme = useCallback((theme: 'dark' | 'light') => {
-    setSettings((prev) => ({ ...prev, theme }));
-  }, []);
-
-  const saveDailyReview = useCallback((reviewData: Omit<DailyReview, 'id' | 'createdAt'>): DailyReview => {
-    const newReview: DailyReview = {
-      ...reviewData,
-      id: `review-${Date.now()}`,
+  const addPYQ = useCallback(async (pyqData: Omit<PYQRecord, 'id' | 'createdAt' | 'userId'>): Promise<PYQRecord> => {
+    if (!userId) throw new Error('Not authenticated');
+    const newId = `pyq-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const newPYQ: PYQRecord = {
+      ...pyqData,
+      id: newId,
+      userId,
       createdAt: new Date().toISOString(),
     };
-    setDailyReviews((prev) => {
-      const filtered = prev.filter((r) => r.date !== reviewData.date);
-      return [newReview, ...filtered];
-    });
-    return newReview;
-  }, []);
+    setPyqs((prev) => [newPYQ, ...prev]);
+    if (!user?.isLocal) {
+      const ref = doc(db, 'users', userId, 'pyqs', newId);
+      await setDoc(ref, newPYQ).catch(() => {});
+    }
+    return newPYQ;
+  }, [userId, user?.isLocal]);
 
-  const resetToSampleData = useCallback(() => {
-    setSessions(generateInitialSessions());
-    setSubjects(INITIAL_SUBJECTS);
-    setTasks(generateInitialTasks());
-    setGoals(INITIAL_GOALS);
-    setSettings(INITIAL_SETTINGS);
-    setDailyReviews(generateInitialDailyReviews());
-    setActiveSession(null);
-  }, []);
+  const deletePYQ = useCallback(async (id: string) => {
+    if (!userId) return;
+    setPyqs((prev) => prev.filter((p) => p.id !== id));
+    if (!user?.isLocal) {
+      const ref = doc(db, 'users', userId, 'pyqs', id);
+      await deleteDoc(ref).catch(() => {});
+    }
+  }, [userId, user?.isLocal]);
+
+  const addAnswerWriting = useCallback(async (ansData: Omit<AnswerWritingRecord, 'id' | 'createdAt' | 'userId'>): Promise<AnswerWritingRecord> => {
+    if (!userId) throw new Error('Not authenticated');
+    const newId = `ans-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const newAns: AnswerWritingRecord = {
+      ...ansData,
+      id: newId,
+      userId,
+      createdAt: new Date().toISOString(),
+    };
+    setAnswers((prev) => [newAns, ...prev]);
+    if (!user?.isLocal) {
+      const ref = doc(db, 'users', userId, 'answerWriting', newId);
+      await setDoc(ref, newAns).catch(() => {});
+    }
+    return newAns;
+  }, [userId, user?.isLocal]);
+
+  const deleteAnswerWriting = useCallback(async (id: string) => {
+    if (!userId) return;
+    setAnswers((prev) => prev.filter((a) => a.id !== id));
+    if (!user?.isLocal) {
+      const ref = doc(db, 'users', userId, 'answerWriting', id);
+      await deleteDoc(ref).catch(() => {});
+    }
+  }, [userId, user?.isLocal]);
+
+  const addRevisionItem = useCallback(async (revData: Omit<RevisionItem, 'id' | 'createdAt' | 'userId' | 'status'>): Promise<RevisionItem> => {
+    if (!userId) throw new Error('Not authenticated');
+    const newId = `rev-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const newRev: RevisionItem = {
+      ...revData,
+      id: newId,
+      userId,
+      status: revData.nextDue <= todayDateStr ? 'due' : 'upcoming',
+      createdAt: new Date().toISOString(),
+    };
+    setRevisions((prev) => [...prev, newRev]);
+    if (!user?.isLocal) {
+      const ref = doc(db, 'users', userId, 'revision', newId);
+      await setDoc(ref, newRev).catch(() => {});
+    }
+    return newRev;
+  }, [userId, user?.isLocal, todayDateStr]);
+
+  const completeRevisionStage = useCallback(async (id: string) => {
+    if (!userId) return;
+    const rev = revisions.find((r) => r.id === id);
+    if (!rev) return;
+
+    // Spaced repetition intervals: 1 -> 3 days -> 7 days -> 15 days -> 30 days -> complete
+    const intervals = [1, 3, 7, 15, 30];
+    const nextStage = rev.stage + 1;
+    const now = new Date();
+    const lastRevStr = getLocalDateString(now);
+
+    if (nextStage > intervals.length) {
+      // Completed all 5 intervals
+      setRevisions((prev) =>
+        prev.map((r) => (r.id === id ? { ...r, status: 'completed' as const, lastRevised: lastRevStr } : r))
+      );
+      if (!user?.isLocal) {
+        const ref = doc(db, 'users', userId, 'revision', id);
+        await updateDoc(ref, {
+          status: 'completed',
+          lastRevised: lastRevStr,
+        }).catch(() => {});
+      }
+    } else {
+      const daysToAdd = intervals[nextStage - 1];
+      const nextDueDate = new Date(now);
+      nextDueDate.setDate(nextDueDate.getDate() + daysToAdd);
+      const nextDueStr = getLocalDateString(nextDueDate);
+
+      setRevisions((prev) =>
+        prev.map((r) =>
+          r.id === id
+            ? {
+                ...r,
+                stage: nextStage,
+                lastRevised: lastRevStr,
+                nextDue: nextDueStr,
+                status: (nextDueStr <= todayDateStr ? 'due' : 'upcoming') as 'due' | 'upcoming',
+              }
+            : r
+        )
+      );
+
+      if (!user?.isLocal) {
+        const ref = doc(db, 'users', userId, 'revision', id);
+        await updateDoc(ref, {
+          stage: nextStage,
+          lastRevised: lastRevStr,
+          nextDue: nextDueStr,
+          status: nextDueStr <= todayDateStr ? 'due' : 'upcoming',
+        }).catch(() => {});
+      }
+    }
+  }, [userId, user?.isLocal, revisions, todayDateStr]);
+
+  const deleteRevisionItem = useCallback(async (id: string) => {
+    if (!userId) return;
+    setRevisions((prev) => prev.filter((r) => r.id !== id));
+    if (!user?.isLocal) {
+      const ref = doc(db, 'users', userId, 'revision', id);
+      await deleteDoc(ref).catch(() => {});
+    }
+  }, [userId, user?.isLocal]);
+
+  const updateGoals = useCallback(async (newGoals: Partial<UserGoals>) => {
+    if (!userId) return;
+    const updated = { ...goals, ...newGoals };
+    setGoals(updated);
+    if (!user?.isLocal) {
+      const userDocRef = doc(db, 'users', userId);
+      await updateDoc(userDocRef, {
+        goals: updated,
+        updatedAt: new Date().toISOString(),
+      }).catch(() => {});
+    }
+  }, [userId, user?.isLocal, goals]);
+
+  const updateSettings = useCallback(async (newSettings: Partial<UserSettings>) => {
+    if (!userId) return;
+    const updated = { ...settings, ...newSettings };
+    setSettings(updated);
+    if (!user?.isLocal) {
+      const userDocRef = doc(db, 'users', userId);
+      await updateDoc(userDocRef, {
+        settings: updated,
+        updatedAt: new Date().toISOString(),
+      }).catch(() => {});
+    }
+  }, [userId, user?.isLocal, settings]);
+
+  const setTheme = useCallback(async (theme: 'dark' | 'light') => {
+    await updateSettings({ theme });
+  }, [updateSettings]);
+
+  const saveDailyReview = useCallback(async (reviewData: Omit<DailyReview, 'id' | 'createdAt' | 'userId'>): Promise<DailyReview> => {
+    if (!userId) throw new Error('Not authenticated');
+    const newId = `rev-${reviewData.date}`;
+    const newReview: DailyReview = {
+      ...reviewData,
+      id: newId,
+      userId,
+      createdAt: new Date().toISOString(),
+    };
+    setDailyReviews((prev) => [newReview, ...prev.filter((r) => r.id !== newId)]);
+    if (!user?.isLocal) {
+      const ref = doc(db, 'users', userId, 'dailyReviews', newId);
+      await setDoc(ref, newReview).catch(() => {});
+    }
+    return newReview;
+  }, [userId, user?.isLocal]);
+
+  const resetToCleanCurriculum = useCallback(async () => {
+    if (!userId) return;
+    const batch = writeBatch(db);
+    const now = new Date().toISOString();
+    UPSC_DEFAULT_SUBJECTS.forEach((subj) => {
+      const docId = `subj-${subj.name.toLowerCase().replace(/[^a-z0-9]/g, '-').slice(0, 15)}-${Math.random().toString(36).substring(2, 6)}`;
+      const ref = doc(db, 'users', userId, 'subjects', docId);
+      batch.set(ref, {
+        ...subj,
+        userId,
+        createdAt: now,
+      });
+    });
+    await batch.commit();
+  }, [userId]);
 
   const exportDataJson = useCallback(() => {
     const data = {
-      version: '2.0',
+      version: '3.0-multiuser',
+      userId,
       exportedAt: new Date().toISOString(),
       sessions,
       subjects,
@@ -574,28 +993,15 @@ export const StudyProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       goals,
       settings,
       dailyReviews,
+      pyqs,
+      answers,
+      revisions,
     };
     return JSON.stringify(data, null, 2);
-  }, [sessions, subjects, tasks, goals, settings, dailyReviews]);
+  }, [userId, sessions, subjects, tasks, goals, settings, dailyReviews, pyqs, answers, revisions]);
 
-  const importDataJson = useCallback((jsonStr: string): boolean => {
-    try {
-      const parsed = JSON.parse(jsonStr);
-      if (Array.isArray(parsed.sessions)) setSessions(parsed.sessions);
-      if (Array.isArray(parsed.subjects)) setSubjects(parsed.subjects);
-      if (Array.isArray(parsed.tasks)) setTasks(parsed.tasks);
-      if (parsed.goals) setGoals(parsed.goals);
-      if (parsed.settings) setSettings(parsed.settings);
-      if (Array.isArray(parsed.dailyReviews)) setDailyReviews(parsed.dailyReviews);
-      return true;
-    } catch {
-      return false;
-    }
-  }, []);
+  // ===================== REAL-TIME ACCURATE CALCULATIONS =====================
 
-  // ===================== ACCURATE COMPUTED METRICS =====================
-
-  // Today's sessions & total seconds (including ongoing live session if active)
   const todaySessions = useMemo(() => {
     return sessions.filter((s) => s.date === todayDateStr);
   }, [sessions, todayDateStr]);
@@ -611,20 +1017,17 @@ export const StudyProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const todayMinutes = Math.floor(todaySeconds / 60);
   const todayHours = Number((todaySeconds / 3600).toFixed(2));
-  const targetSeconds = (goals.dailyTargetHours || 5) * 3600;
+  const targetSeconds = (goals.dailyTargetHours || 6) * 3600;
   const todayProgressPercent = Math.min(100, Math.round((todaySeconds / targetSeconds) * 100));
 
-  // Week & Month statistics (calculated accurately from real saved sessions)
   const { weekSeconds, monthSeconds } = useMemo(() => {
     const now = new Date();
-    // Start of week (Monday in local time)
     const dayOfWeek = now.getDay();
     const diffToMonday = (dayOfWeek + 6) % 7;
     const startOfWeek = new Date(now);
     startOfWeek.setDate(now.getDate() - diffToMonday);
     startOfWeek.setHours(0, 0, 0, 0);
 
-    // Start of month
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
 
     let wSec = 0;
@@ -643,7 +1046,6 @@ export const StudyProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return { weekSeconds: wSec, monthSeconds: mSec };
   }, [sessions]);
 
-  // Average daily study time across active days
   const dailyAvgSeconds = useMemo(() => {
     const dateMap: Record<string, number> = {};
     sessions.forEach((s) => {
@@ -655,7 +1057,6 @@ export const StudyProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return Math.round(total / uniqueDays);
   }, [sessions]);
 
-  // Streak Calculation (minimum streak requirement in minutes)
   const streak = useMemo<StreakInfo>(() => {
     const minRequiredSec = (goals.minStreakMinutes || 30) * 60;
     const historyMap: Record<string, number> = {};
@@ -664,23 +1065,18 @@ export const StudyProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       historyMap[s.date] = (historyMap[s.date] || 0) + s.durationSeconds;
     });
 
-    // Add active timer to today's historyMap
     if (activeSession) {
       historyMap[todayDateStr] = (historyMap[todayDateStr] || 0) + timerSeconds;
     }
 
     const todaySec = historyMap[todayDateStr] || 0;
     const todayCompleted = todaySec >= minRequiredSec;
-
-    // Total days studied with >= minRequiredSec
     const totalDaysStudied = Object.values(historyMap).filter((sec) => sec >= minRequiredSec).length;
 
-    // Calculate current streak backwards from today or yesterday
     let current = 0;
     const now = new Date();
     const todayDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-    // Check yesterday's status
     const yesterdayDate = new Date(todayDate);
     yesterdayDate.setDate(yesterdayDate.getDate() - 1);
     const yesterdayStr = getLocalDateString(yesterdayDate);
@@ -715,7 +1111,6 @@ export const StudyProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       current = 0;
     }
 
-    // Longest historical streak calculation
     const qualifyingDates = Object.keys(historyMap)
       .filter((d) => (historyMap[d] || 0) >= minRequiredSec)
       .sort();
@@ -752,7 +1147,6 @@ export const StudyProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     };
   }, [sessions, activeSession, timerSeconds, todayDateStr, goals.minStreakMinutes]);
 
-  // Subject Stats Calculation
   const subjectStats = useMemo<SubjectStats[]>(() => {
     const now = new Date();
     const dayOfWeek = now.getDay();
@@ -783,6 +1177,7 @@ export const StudyProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       return {
         id: subj.id,
         name: subj.name,
+        category: subj.category || 'GS',
         color: subj.color,
         icon: subj.icon,
         weeklyTargetHours: subj.weeklyTargetHours,
@@ -797,7 +1192,37 @@ export const StudyProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     });
   }, [subjects, sessions]);
 
-  // Analytics Calculation strictly from sessions
+  // GS vs Optional vs CSAT category breakdown
+  const categoryStats = useMemo<CategoryStats[]>(() => {
+    const categories: { key: SubjectCategory; label: string; color: string }[] = [
+      { key: 'GS', label: 'General Studies (GS)', color: '#6366f1' },
+      { key: 'OPTIONAL', label: 'Optional Subject', color: '#ec4899' },
+      { key: 'CSAT', label: 'CSAT', color: '#f97316' },
+      { key: 'ESSAY_CA', label: 'Essay & Current Affairs', color: '#10b981' },
+      { key: 'OTHER', label: 'Other', color: '#64748b' },
+    ];
+
+    const totalSecondsAll = sessions.reduce((acc, s) => acc + s.durationSeconds, 0);
+
+    return categories.map((cat) => {
+      const matchingSubjIds = new Set(subjects.filter((s) => (s.category || 'GS') === cat.key).map((s) => s.id));
+      const catSessions = sessions.filter((s) => matchingSubjIds.has(s.subjectId));
+      const sec = catSessions.reduce((acc, s) => acc + s.durationSeconds, 0);
+      const hours = Number((sec / 3600).toFixed(1));
+      const percent = totalSecondsAll > 0 ? Math.round((sec / totalSecondsAll) * 100) : 0;
+
+      return {
+        category: cat.key,
+        label: cat.label,
+        totalSeconds: sec,
+        totalHours: hours,
+        percent,
+        sessionCount: catSessions.length,
+        color: cat.color,
+      };
+    });
+  }, [subjects, sessions]);
+
   const analytics = useMemo<AnalyticsSummary>(() => {
     const totalSeconds = sessions.reduce((acc, s) => acc + s.durationSeconds, 0);
     const totalHours = Number((totalSeconds / 3600).toFixed(1));
@@ -806,12 +1231,10 @@ export const StudyProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const totalFocus = sessions.reduce((acc, s) => acc + s.focusScore, 0);
     const avgFocusScore = sessions.length > 0 ? Number((totalFocus / sessions.length).toFixed(1)) : 0;
 
-    // Most and least studied subject
     const sortedSubjs = [...subjectStats].filter((s) => s.totalSeconds > 0).sort((a, b) => b.totalSeconds - a.totalSeconds);
     const mostStudiedSubject = sortedSubjs.length > 0 ? sortedSubjs[0] : null;
     const leastStudiedSubject = sortedSubjs.length > 1 ? sortedSubjs[sortedSubjs.length - 1] : null;
 
-    // Best study day of week calculation
     const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
     const dayBuckets: { totalSec: number; count: number }[] = Array.from({ length: 7 }, () => ({ totalSec: 0, count: 0 }));
 
@@ -836,7 +1259,6 @@ export const StudyProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     const bestStudyDay = bestDayIdx !== -1 ? { dayName: dayNames[bestDayIdx], avgHours: Number(maxDayAvg.toFixed(1)) } : null;
 
-    // Best study time window (Morning 6-12, Afternoon 12-17, Evening 17-22, Night 22-6)
     const timeWindows: Record<string, { totalFocus: number; count: number; name: string }> = {
       morning: { totalFocus: 0, count: 0, name: 'Morning (06:00 – 12:00)' },
       afternoon: { totalFocus: 0, count: 0, name: 'Afternoon (12:00 – 17:00)' },
@@ -879,18 +1301,24 @@ export const StudyProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       leastStudiedSubject,
       bestStudyDay,
       bestStudyTime: bestWindow,
+      categoryDistribution: categoryStats,
     };
-  }, [sessions, subjectStats, dailyAvgSeconds]);
+  }, [sessions, subjectStats, dailyAvgSeconds, categoryStats]);
 
   const value = {
     sessions,
     subjects,
     tasks,
+    dailyReviews,
+    pyqs,
+    answers,
+    revisions,
     goals,
     settings,
     activeSession,
-    dailyReviews,
     timerSeconds,
+    syncStatus,
+    isOnline,
     todayDateStr,
     todaySessions,
     todaySeconds,
@@ -902,6 +1330,7 @@ export const StudyProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     dailyAvgSeconds,
     streak,
     subjectStats,
+    categoryStats,
     analytics,
     startSession,
     pauseSession,
@@ -918,13 +1347,19 @@ export const StudyProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     toggleTask,
     updateTask,
     deleteTask,
+    addPYQ,
+    deletePYQ,
+    addAnswerWriting,
+    deleteAnswerWriting,
+    addRevisionItem,
+    completeRevisionStage,
+    deleteRevisionItem,
     updateGoals,
     updateSettings,
     setTheme,
     saveDailyReview,
-    resetToSampleData,
+    resetToCleanCurriculum,
     exportDataJson,
-    importDataJson,
   };
 
   return <StudyContext.Provider value={value}>{children}</StudyContext.Provider>;

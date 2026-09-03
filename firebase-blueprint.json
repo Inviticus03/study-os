@@ -1,0 +1,178 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile, configuration goals, and UPSC targets",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Authenticated user identifier" },
+        "email": { "type": "string", "description": "User email address" },
+        "displayName": { "type": "string", "description": "User full name" },
+        "upscYear": { "type": "string", "description": "Target UPSC examination year (e.g. 2026)" },
+        "targetService": { "type": "string", "description": "Target service: IAS, IPS, IFS, IRS, etc." },
+        "optionalSubject": { "type": "string", "description": "UPSC Optional Subject" },
+        "goals": {
+          "type": "object",
+          "properties": {
+            "dailyTargetHours": { "type": "number" },
+            "weeklyTargetHours": { "type": "number" },
+            "minStreakMinutes": { "type": "number" }
+          }
+        },
+        "settings": {
+          "type": "object",
+          "properties": {
+            "theme": { "type": "string" },
+            "soundEnabled": { "type": "boolean" },
+            "ambientSound": { "type": "string" },
+            "ambientVolume": { "type": "number" },
+            "notifications": { "type": "object" }
+          }
+        },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["uid", "email"]
+    },
+    "StudySession": {
+      "title": "StudySession",
+      "description": "Logged focus study session records belonging strictly to the user",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "subjectId": { "type": "string" },
+        "subjectName": { "type": "string" },
+        "subjectColor": { "type": "string" },
+        "topic": { "type": "string" },
+        "startTime": { "type": "string" },
+        "endTime": { "type": "string" },
+        "durationSeconds": { "type": "number" },
+        "date": { "type": "string" },
+        "focusScore": { "type": "number" },
+        "sessionType": { "type": "string" },
+        "accomplishment": { "type": "string" },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["userId", "subjectId", "durationSeconds", "date", "startTime", "endTime"]
+    },
+    "Subject": {
+      "title": "Subject",
+      "description": "User's UPSC curriculum subjects (GS, Optional, CSAT)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "name": { "type": "string" },
+        "category": { "type": "string" },
+        "color": { "type": "string" },
+        "icon": { "type": "string" },
+        "weeklyTargetHours": { "type": "number" },
+        "monthlyTargetHours": { "type": "number" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["userId", "name", "color"]
+    },
+    "StudyPlanTask": {
+      "title": "StudyPlanTask",
+      "description": "Daily study planning task items",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "subjectId": { "type": "string" },
+        "subjectName": { "type": "string" },
+        "subjectColor": { "type": "string" },
+        "task": { "type": "string" },
+        "estimatedMinutes": { "type": "number" },
+        "priority": { "type": "string" },
+        "date": { "type": "string" },
+        "completed": { "type": "boolean" },
+        "completedAt": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["userId", "subjectId", "task", "date"]
+    },
+    "DailyReview": {
+      "title": "DailyReview",
+      "description": "Daily AI-assisted review and reflection report",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "date": { "type": "string" },
+        "summary": { "type": "string" },
+        "whatWentWell": { "type": "array", "items": { "type": "string" } },
+        "whatCouldImprove": { "type": "array", "items": { "type": "string" } },
+        "recommendationForTomorrow": { "type": "string" },
+        "rating": { "type": "string" },
+        "totalMinutes": { "type": "number" },
+        "sessionCount": { "type": "number" },
+        "avgFocus": { "type": "number" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["userId", "date", "summary"]
+    },
+    "PYQRecord": {
+      "title": "PYQRecord",
+      "description": "UPSC Previous Year Questions practice logs",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "year": { "type": "number" },
+        "paper": { "type": "string" },
+        "subjectId": { "type": "string" },
+        "subjectName": { "type": "string" },
+        "totalQuestions": { "type": "number" },
+        "correctQuestions": { "type": "number" },
+        "timeTakenMinutes": { "type": "number" },
+        "notes": { "type": "string" },
+        "date": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["userId", "year", "paper", "date"]
+    },
+    "AnswerWritingRecord": {
+      "title": "AnswerWritingRecord",
+      "description": "UPSC Mains answer writing practice logs",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "question": { "type": "string" },
+        "paper": { "type": "string" },
+        "subjectId": { "type": "string" },
+        "subjectName": { "type": "string" },
+        "wordCount": { "type": "number" },
+        "timeTakenMinutes": { "type": "number" },
+        "marksAwarded": { "type": "number" },
+        "maxMarks": { "type": "number" },
+        "selfFeedback": { "type": "string" },
+        "date": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["userId", "question", "paper", "date"]
+    },
+    "RevisionItem": {
+      "title": "RevisionItem",
+      "description": "UPSC spaced repetition schedule items",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "topic": { "type": "string" },
+        "subjectId": { "type": "string" },
+        "subjectName": { "type": "string" },
+        "stage": { "type": "number" },
+        "lastRevised": { "type": "string" },
+        "nextDue": { "type": "string" },
+        "status": { "type": "string" },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["userId", "topic", "subjectId", "nextDue"]
+    }
+  }
+}

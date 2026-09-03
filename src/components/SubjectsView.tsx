@@ -10,13 +10,15 @@ import {
   X,
   BookMarked,
   Sparkles,
+  RotateCcw,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useStudy } from '../context/StudyContext';
-import { Subject } from '../types';
+import { Subject, SubjectCategory } from '../types';
 import { SubjectIcon, SUBJECT_ICON_OPTIONS, SUBJECT_COLOR_OPTIONS } from './SubjectIcon';
 import { formatMinutesToDisplay } from '../utils/formatters';
 import { ConfirmModal } from './ConfirmModal';
+import { UPSC_DEFAULT_SUBJECTS } from '../data/upscData';
 
 export const SubjectsView: React.FC = () => {
   const { subjects, subjectStats, addSubject, updateSubject, deleteSubject } = useStudy();
@@ -30,16 +32,18 @@ export const SubjectsView: React.FC = () => {
   const [name, setName] = useState('');
   const [color, setColor] = useState(SUBJECT_COLOR_OPTIONS[0]);
   const [icon, setIcon] = useState('BookOpen');
-  const [weeklyTargetHours, setWeeklyTargetHours] = useState(5);
-  const [monthlyTargetHours, setMonthlyTargetHours] = useState(20);
+  const [category, setCategory] = useState<SubjectCategory>('GS');
+  const [weeklyTargetHours, setWeeklyTargetHours] = useState(6);
+  const [monthlyTargetHours, setMonthlyTargetHours] = useState(25);
 
   const openAddModal = () => {
     setEditingSubject(null);
     setName('');
     setColor(SUBJECT_COLOR_OPTIONS[Math.floor(Math.random() * SUBJECT_COLOR_OPTIONS.length)]);
     setIcon('BookOpen');
-    setWeeklyTargetHours(5);
-    setMonthlyTargetHours(20);
+    setCategory('GS');
+    setWeeklyTargetHours(6);
+    setMonthlyTargetHours(25);
     setIsModalOpen(true);
   };
 
@@ -48,6 +52,7 @@ export const SubjectsView: React.FC = () => {
     setName(subj.name);
     setColor(subj.color);
     setIcon(subj.icon);
+    setCategory(subj.category || 'GS');
     setWeeklyTargetHours(subj.weeklyTargetHours);
     setMonthlyTargetHours(subj.monthlyTargetHours);
     setIsModalOpen(true);
@@ -63,6 +68,7 @@ export const SubjectsView: React.FC = () => {
         name: name.trim(),
         color,
         icon,
+        category,
         weeklyTargetHours: Number(weeklyTargetHours) || 1,
         monthlyTargetHours: Number(monthlyTargetHours) || 1,
       });
@@ -71,11 +77,20 @@ export const SubjectsView: React.FC = () => {
         name: name.trim(),
         color,
         icon,
+        category,
         weeklyTargetHours: Number(weeklyTargetHours) || 1,
         monthlyTargetHours: Number(monthlyTargetHours) || 1,
       });
     }
     setIsModalOpen(false);
+  };
+
+  const handleSeedDefaults = async () => {
+    for (const item of UPSC_DEFAULT_SUBJECTS) {
+      if (!subjects.some((s) => s.name.toLowerCase() === item.name.toLowerCase())) {
+        await addSubject(item);
+      }
+    }
   };
 
   return (
@@ -88,38 +103,58 @@ export const SubjectsView: React.FC = () => {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-light tracking-tight uppercase font-mono text-neutral-900 dark:text-[#FAFAFA]">
-            Subjects & Curricula
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight uppercase font-mono text-neutral-900 dark:text-[#FAFAFA] flex items-center gap-2.5">
+            <BookMarked className="w-7 h-7 text-[#6366F1]" />
+            <span>UPSC Syllabus & Curriculum</span>
           </h1>
-          <p className="text-xs text-neutral-500 dark:text-[#A1A1AA] uppercase tracking-wider mt-1">
-            Configure subjects, weekly targets, and analyze individual discipline statistics.
+          <p className="text-xs sm:text-sm text-neutral-500 dark:text-[#A1A1AA] mt-1">
+            Manage your GS 1-4 papers, Optional Subject, CSAT, Essay, and Current Affairs modules.
           </p>
         </div>
 
-        <button
-          onClick={openAddModal}
-          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-neutral-900 dark:bg-white hover:bg-neutral-800 dark:hover:bg-[#E4E4E7] text-white dark:text-black text-xs font-semibold uppercase tracking-wider shadow-md transition-all self-start sm:self-auto cursor-pointer min-h-[44px]"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Add New Subject</span>
-        </button>
+        <div className="flex items-center gap-2.5">
+          <button
+            onClick={handleSeedDefaults}
+            className="px-3.5 py-2.5 rounded-xl border border-neutral-200 dark:border-[#27272A] bg-white dark:bg-[#18181B] text-neutral-700 dark:text-[#A1A1AA] hover:bg-neutral-100 dark:hover:bg-[#27272A] text-xs font-semibold uppercase tracking-wider transition-all cursor-pointer min-h-[44px] flex items-center gap-1.5"
+            title="Import official standard UPSC curriculum"
+          >
+            <Sparkles className="w-4 h-4 text-indigo-500" />
+            <span>Load Default GS/Optional</span>
+          </button>
+
+          <button
+            onClick={openAddModal}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#6366F1] hover:bg-[#4F46E5] text-white text-xs font-bold uppercase tracking-wider shadow-md transition-all cursor-pointer min-h-[44px]"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Add Custom Paper</span>
+          </button>
+        </div>
       </div>
 
       {/* Grid of Subject Cards or Empty State */}
       {subjects.length === 0 ? (
-        <div className="bg-white dark:bg-[#18181B] border border-neutral-200 dark:border-[#27272A] rounded-2xl p-12 text-center shadow-xl">
+        <div className="bg-white dark:bg-[#18181B] border border-neutral-200 dark:border-[#27272A] rounded-3xl p-12 text-center shadow-xl">
           <BookMarked className="w-12 h-12 text-neutral-400 dark:text-[#71717A] mx-auto mb-3 opacity-40" />
           <h3 className="text-base font-bold text-neutral-900 dark:text-[#FAFAFA]">No Subjects Configured</h3>
           <p className="text-xs text-neutral-500 dark:text-[#A1A1AA] mt-1 mb-5 max-w-sm mx-auto">
-            Add your subjects or courses to start tracking targeted study hours and focus scores.
+            Load the default UPSC CSE blueprint or create custom subjects for your preparation.
           </p>
-          <button
-            onClick={openAddModal}
-            className="px-5 py-2.5 rounded-xl bg-[#6366F1] hover:bg-[#4F46E5] text-white text-xs font-bold uppercase tracking-wider shadow-md inline-flex items-center gap-2 cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Create First Subject</span>
-          </button>
+          <div className="flex items-center justify-center gap-3">
+            <button
+              onClick={handleSeedDefaults}
+              className="px-5 py-2.5 rounded-xl bg-[#6366F1] hover:bg-[#4F46E5] text-white text-xs font-bold uppercase tracking-wider shadow-md inline-flex items-center gap-2 cursor-pointer"
+            >
+              <Sparkles className="w-4 h-4" />
+              <span>Load UPSC Syllabus (10 Modules)</span>
+            </button>
+            <button
+              onClick={openAddModal}
+              className="px-4 py-2.5 rounded-xl border border-neutral-200 dark:border-[#27272A] text-xs font-semibold cursor-pointer"
+            >
+              Create Blank Subject
+            </button>
+          </div>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
@@ -234,11 +269,11 @@ export const SubjectsView: React.FC = () => {
           <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
-            className="bg-white dark:bg-[#18181B] border border-neutral-200 dark:border-[#27272A] rounded-2xl w-full max-w-md p-6 shadow-2xl overflow-hidden"
+            className="bg-white dark:bg-[#18181B] border border-neutral-200 dark:border-[#27272A] rounded-3xl w-full max-w-md p-6 shadow-2xl overflow-hidden"
           >
             <div className="flex items-center justify-between pb-4 border-b border-neutral-100 dark:border-[#27272A]">
               <h2 className="text-base font-bold uppercase tracking-tight text-neutral-900 dark:text-[#FAFAFA]">
-                {editingSubject ? 'Edit Subject' : 'Add New Subject'}
+                {editingSubject ? 'Edit UPSC Subject' : 'Add UPSC Subject'}
               </h2>
               <button
                 onClick={() => setIsModalOpen(false)}
@@ -258,9 +293,25 @@ export const SubjectsView: React.FC = () => {
                   required
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="e.g. Organic Chemistry, Linear Algebra..."
+                  placeholder="e.g. GS-1: Ancient & Medieval History"
                   className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 dark:border-[#27272A] bg-white dark:bg-[#09090B] text-neutral-900 dark:text-white text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#6366F1]"
                 />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-neutral-700 dark:text-[#A1A1AA] mb-1.5">
+                  Curriculum Category
+                </label>
+                <select
+                  value={category}
+                  onChange={(e) => setCategory(e.target.value as SubjectCategory)}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 dark:border-[#27272A] bg-white dark:bg-[#09090B] text-neutral-900 dark:text-white text-xs font-medium"
+                >
+                  <option value="GS">General Studies (GS 1 / 2 / 3 / 4 / Prelims)</option>
+                  <option value="OPTIONAL">Optional Subject (Paper I & II)</option>
+                  <option value="CSAT">CSAT (Paper II Aptitude & Comprehension)</option>
+                  <option value="ESSAY_CA">Essay & Daily Current Affairs</option>
+                </select>
               </div>
 
               {/* Color Selection */}

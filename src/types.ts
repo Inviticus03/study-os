@@ -1,5 +1,27 @@
+export type SubjectCategory = 'GS' | 'OPTIONAL' | 'CSAT' | 'ESSAY_CA' | 'OTHER';
+
+export interface AuthUser {
+  uid: string;
+  email: string | null;
+  displayName: string | null;
+  photoURL?: string | null;
+  isLocal?: boolean;
+}
+
+export interface UserProfile {
+  uid: string;
+  email: string;
+  displayName: string;
+  upscYear: string; // e.g. "2026" or "2027"
+  targetService: string; // e.g. "IAS", "IPS", "IFS", "IRS"
+  optionalSubject: string; // e.g. "PSIR", "Sociology", "Geography", "History", "Public Administration", "Anthropology"
+  createdAt: string;
+  updatedAt?: string;
+}
+
 export interface StudySession {
   id: string;
+  userId?: string;
   date: string; // YYYY-MM-DD
   subjectId: string;
   subjectName: string;
@@ -9,14 +31,17 @@ export interface StudySession {
   durationSeconds: number;
   topic: string;
   focusScore: number; // 1 to 10
-  sessionType: 'deep_work' | 'revision' | 'practice' | 'exam_prep' | 'reading';
+  sessionType: 'deep_work' | 'revision' | 'practice' | 'exam_prep' | 'reading' | 'answer_writing' | 'pyq';
   accomplishment?: string;
   notes?: string;
+  createdAt?: string;
 }
 
 export interface Subject {
   id: string;
+  userId?: string;
   name: string;
+  category?: SubjectCategory;
   color: string; // hex or tailwind class color
   icon: string; // lucide icon identifier
   weeklyTargetHours: number;
@@ -26,6 +51,7 @@ export interface Subject {
 
 export interface StudyPlanTask {
   id: string;
+  userId?: string;
   subjectId: string;
   subjectName: string;
   subjectColor: string;
@@ -40,6 +66,7 @@ export interface StudyPlanTask {
 
 export interface DailyReview {
   id: string;
+  userId?: string;
   date: string; // YYYY-MM-DD
   summary: string;
   whatWentWell: string[];
@@ -52,20 +79,66 @@ export interface DailyReview {
   createdAt: string;
 }
 
+export interface PYQRecord {
+  id: string;
+  userId?: string;
+  year: number;
+  paper: 'Prelims GS-1' | 'Prelims CSAT' | 'Mains GS-1' | 'Mains GS-2' | 'Mains GS-3' | 'Mains GS-4' | 'Mains Optional-1' | 'Mains Optional-2' | 'Mains Essay';
+  subjectId: string;
+  subjectName: string;
+  totalQuestions: number;
+  correctQuestions: number;
+  timeTakenMinutes: number;
+  notes?: string;
+  date: string; // YYYY-MM-DD
+  createdAt: string;
+}
+
+export interface AnswerWritingRecord {
+  id: string;
+  userId?: string;
+  question: string;
+  paper: 'GS-1' | 'GS-2' | 'GS-3' | 'GS-4' | 'Optional-1' | 'Optional-2' | 'Essay';
+  subjectId: string;
+  subjectName: string;
+  wordCount: number;
+  timeTakenMinutes: number;
+  marksAwarded?: number;
+  maxMarks: number; // typically 10 or 15
+  selfFeedback?: string;
+  date: string; // YYYY-MM-DD
+  createdAt: string;
+}
+
+export interface RevisionItem {
+  id: string;
+  userId?: string;
+  topic: string;
+  subjectId: string;
+  subjectName: string;
+  subjectColor: string;
+  stage: number; // 1 (1 day), 2 (3 days), 3 (7 days), 4 (15 days), 5 (30 days)
+  lastRevised?: string;
+  nextDue: string; // YYYY-MM-DD
+  status: 'due' | 'completed' | 'upcoming';
+  notes?: string;
+  createdAt: string;
+}
+
 export interface UserGoals {
-  dailyTargetHours: number; // default: 5
-  weeklyTargetHours: number; // default: 30
+  dailyTargetHours: number; // default: 6
+  weeklyTargetHours: number; // default: 36
   minStreakMinutes: number; // default: 30
 }
 
 export interface NotificationSettings {
   dailyReminder: boolean;
-  dailyReminderTime: string; // e.g. "09:00"
+  dailyReminderTime: string; // e.g. "08:00"
   goalReminder: boolean;
   breakReminder: boolean;
   breakIntervalMinutes: number;
   endOfDayReview: boolean;
-  endOfDayReviewTime: string; // e.g. "21:30"
+  endOfDayReviewTime: string; // e.g. "22:00"
 }
 
 export interface UserSettings {
@@ -82,7 +155,7 @@ export interface ActiveSession {
   subjectColor: string;
   topic: string;
   sessionGoalMinutes?: number;
-  sessionType: 'deep_work' | 'revision' | 'practice' | 'exam_prep' | 'reading';
+  sessionType: 'deep_work' | 'revision' | 'practice' | 'exam_prep' | 'reading' | 'answer_writing' | 'pyq';
   startTime: number; // timestamp ms
   accumulatedSeconds: number;
   isPaused: boolean;
@@ -93,6 +166,7 @@ export interface ActiveSession {
 export interface SubjectStats {
   id: string;
   name: string;
+  category?: SubjectCategory;
   color: string;
   icon: string;
   weeklyTargetHours: number;
@@ -103,6 +177,16 @@ export interface SubjectStats {
   avgFocus: number;
   weeklyMinutes: number;
   monthlyMinutes: number;
+}
+
+export interface CategoryStats {
+  category: SubjectCategory;
+  label: string;
+  totalSeconds: number;
+  totalHours: number;
+  percent: number;
+  sessionCount: number;
+  color: string;
 }
 
 export interface StreakInfo {
@@ -123,4 +207,7 @@ export interface AnalyticsSummary {
   leastStudiedSubject: SubjectStats | null;
   bestStudyDay: { dayName: string; avgHours: number } | null;
   bestStudyTime: { windowName: string; avgFocus: number; count: number } | null;
+  categoryDistribution: CategoryStats[];
 }
+
+export type SyncStatus = 'synced' | 'saving' | 'offline' | 'error';

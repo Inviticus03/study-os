@@ -14,11 +14,15 @@ import {
   BookOpen,
   Calendar,
   Layers,
+  FileQuestion,
+  PenTool,
+  RotateCcw,
+  GraduationCap,
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useStudy } from '../context/StudyContext';
-import { formatSecondsToDisplay, formatTimeDisplay, formatMinutesToDisplay } from '../utils/formatters';
-import { SubjectIcon } from './SubjectIcon';
+import { useAuth } from '../context/AuthContext';
+import { formatSecondsToDisplay } from '../utils/formatters';
 
 interface HomeDashboardProps {
   onStartStudying: () => void;
@@ -26,6 +30,9 @@ interface HomeDashboardProps {
   onOpenDailyReview: () => void;
   onOpenAnalytics: () => void;
   onOpenHistory: () => void;
+  onOpenPYQs: () => void;
+  onOpenAnswerWriting: () => void;
+  onOpenRevision: () => void;
   onOpenTimerWithTask: (subjectId: string, topic: string, mins: number, taskId: string) => void;
 }
 
@@ -35,8 +42,12 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
   onOpenDailyReview,
   onOpenAnalytics,
   onOpenHistory,
+  onOpenPYQs,
+  onOpenAnswerWriting,
+  onOpenRevision,
   onOpenTimerWithTask,
 }) => {
+  const { profile } = useAuth();
   const {
     todaySeconds,
     todayProgressPercent,
@@ -49,11 +60,13 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
     todayDateStr,
     sessions,
     subjects,
+    pyqs,
+    answers,
+    revisions,
     startSession,
-    activeSession,
   } = useStudy();
 
-  const targetHours = goals.dailyTargetHours || 5;
+  const targetHours = goals.dailyTargetHours || 6;
   const targetSeconds = targetHours * 3600;
 
   // Quick Start Form state on Dashboard
@@ -84,7 +97,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
   // Latest daily review for today
   const todayReview = dailyReviews.find((r) => r.date === todayDateStr);
 
-  // Average focus score for today or all sessions
+  // Average focus score
   const avgFocusScore = useMemo(() => {
     const list = todaySessions.length > 0 ? todaySessions : sessions;
     if (list.length === 0) return '—';
@@ -92,7 +105,10 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
     return (sum / list.length).toFixed(1);
   }, [todaySessions, sessions]);
 
-  // Weekly Overview 7 Days Bar Chart Data strictly from saved sessions
+  // Due revisions count
+  const dueRevisionsCount = revisions.filter((r) => r.status !== 'completed' && r.nextDue <= todayDateStr).length;
+
+  // Weekly Activity Bar Chart
   const weeklyDays = useMemo(() => {
     const days: { dayName: string; dateStr: string; heightPercent: number; isToday: boolean; seconds: number }[] = [];
     const dateMap: Record<string, number> = {};
@@ -101,7 +117,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
       dateMap[s.date] = (dateMap[s.date] || 0) + s.durationSeconds;
     });
 
-    const maxSec = Math.max(...Object.values(dateMap), targetSeconds, 3600 * 5);
+    const maxSec = Math.max(...Object.values(dateMap), targetSeconds, 3600 * 6);
 
     for (let i = 6; i >= 0; i--) {
       const d = new Date();
@@ -148,12 +164,12 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
         
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 sm:gap-8 items-center relative z-10">
           
-          {/* Left Hero Overview: Today's Status & Big Metric */}
+          {/* Left Hero Overview */}
           <div className="lg:col-span-5 space-y-4">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold uppercase tracking-wider bg-indigo-50 dark:bg-[#6366F1]/15 text-[#6366F1] border border-indigo-200/60 dark:border-[#6366F1]/30">
                 <span className="w-1.5 h-1.5 rounded-full bg-[#6366F1] animate-ping" />
-                Live Focus Engine
+                Target UPSC {profile?.upscYear || '2026'} ({profile?.targetService || 'IAS'})
               </span>
 
               <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 border border-amber-200/60 dark:border-amber-900/40">
@@ -170,7 +186,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
                 {formatSecondsToDisplay(todaySeconds)}
               </h1>
               <p className="text-xs text-neutral-500 dark:text-[#71717A] mt-1 font-medium">
-                Target: {targetHours}h 00m ({todayProgressPercent}% completed)
+                Daily Target: {targetHours}h 00m ({todayProgressPercent}% completed)
               </p>
             </div>
 
@@ -199,9 +215,9 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
               <button
                 type="button"
                 onClick={onStartStudying}
-                className="text-[11px] font-semibold text-[#6366F1] hover:underline flex items-center gap-1"
+                className="text-[11px] font-semibold text-[#6366F1] hover:underline flex items-center gap-1 cursor-pointer"
               >
-                <span>Full Timer Setup</span>
+                <span>Full Timer View</span>
                 <ChevronRight className="w-3 h-3" />
               </button>
             </div>
@@ -211,7 +227,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
               {/* Subject Selection Pills */}
               <div>
                 <label className="block text-[11px] font-bold uppercase tracking-wider text-neutral-500 dark:text-[#A1A1AA] mb-2">
-                  1. Select Subject
+                  1. Select Subject / GS Paper
                 </label>
                 <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
                   {subjects.map((s) => {
@@ -241,21 +257,19 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
               {/* Topic Input */}
               <div>
                 <label className="block text-[11px] font-bold uppercase tracking-wider text-neutral-500 dark:text-[#A1A1AA] mb-1.5">
-                  2. Focus Objective (Optional)
+                  2. Focus Directive / Chapter (Optional)
                 </label>
                 <input
                   type="text"
                   value={quickTopic}
                   onChange={(e) => setQuickTopic(e.target.value)}
-                  placeholder={`e.g. Chapter review, problem sets, formulas...`}
+                  placeholder={`e.g. Laxmikanth: Emergency Provisions & Basic Structure doctrine`}
                   className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-200 dark:border-[#27272A] bg-white dark:bg-[#18181B] text-neutral-900 dark:text-white text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#6366F1]"
                 />
               </div>
 
-              {/* Duration Goal & Big Launch Button */}
+              {/* Duration Goal & Launch Button */}
               <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 pt-1">
-                
-                {/* Duration presets */}
                 <div className="sm:col-span-5 flex items-center gap-1.5">
                   {durationOptions.map((opt) => (
                     <button
@@ -273,14 +287,13 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
                   ))}
                 </div>
 
-                {/* Primary Start Studying CTA Button */}
                 <div className="sm:col-span-7">
                   <button
                     type="submit"
                     className="w-full min-h-[44px] bg-neutral-900 dark:bg-white text-white dark:text-black hover:bg-neutral-800 dark:hover:bg-[#E4E4E7] font-bold py-3 px-5 rounded-xl shadow-lg flex items-center justify-center gap-2.5 uppercase tracking-wide text-xs sm:text-sm transition-all transform active:scale-98 cursor-pointer group"
                   >
                     <Play className="w-4 h-4 fill-current group-hover:scale-110 transition-transform" />
-                    <span>Start Studying Now</span>
+                    <span>Start Study Session</span>
                     {quickDuration && (
                       <span className="font-mono text-xs px-2 py-0.5 rounded-md bg-neutral-700 dark:bg-neutral-200 text-white dark:text-black">
                         {quickDuration}m
@@ -294,6 +307,72 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
 
         </div>
       </section>
+
+      {/* ================= UPSC QUICK ACTION TILES ================= */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        {/* PYQ Hub Tile */}
+        <button
+          onClick={onOpenPYQs}
+          className="p-4 rounded-2xl bg-white dark:bg-[#18181B] border border-neutral-200 dark:border-[#27272A] hover:border-[#6366F1] dark:hover:border-[#6366F1] text-left transition-all shadow-xs group cursor-pointer"
+        >
+          <div className="flex items-center justify-between mb-2">
+            <div className="w-8 h-8 rounded-xl bg-indigo-500/10 text-indigo-500 flex items-center justify-center">
+              <FileQuestion className="w-4 h-4" />
+            </div>
+            <span className="text-xs font-mono font-bold text-neutral-900 dark:text-white group-hover:text-[#6366F1]">
+              {pyqs.length} Tests Logged →
+            </span>
+          </div>
+          <h3 className="text-sm font-bold text-neutral-900 dark:text-white uppercase tracking-wider">
+            Prelims & Mains PYQ Tracker
+          </h3>
+          <p className="text-xs text-neutral-500 dark:text-[#A1A1AA] mt-0.5">
+            Analyze accuracy & speed per question across UPSC papers.
+          </p>
+        </button>
+
+        {/* Mains Answer Writing Tile */}
+        <button
+          onClick={onOpenAnswerWriting}
+          className="p-4 rounded-2xl bg-white dark:bg-[#18181B] border border-neutral-200 dark:border-[#27272A] hover:border-[#6366F1] dark:hover:border-[#6366F1] text-left transition-all shadow-xs group cursor-pointer"
+        >
+          <div className="flex items-center justify-between mb-2">
+            <div className="w-8 h-8 rounded-xl bg-pink-500/10 text-pink-500 flex items-center justify-center">
+              <PenTool className="w-4 h-4" />
+            </div>
+            <span className="text-xs font-mono font-bold text-neutral-900 dark:text-white group-hover:text-[#6366F1]">
+              {answers.length} Answers →
+            </span>
+          </div>
+          <h3 className="text-sm font-bold text-neutral-900 dark:text-white uppercase tracking-wider">
+            Mains Answer Writing
+          </h3>
+          <p className="text-xs text-neutral-500 dark:text-[#A1A1AA] mt-0.5">
+            Track word count, marks evaluation, structure & feedback.
+          </p>
+        </button>
+
+        {/* Spaced Repetition Revision Tile */}
+        <button
+          onClick={onOpenRevision}
+          className="p-4 rounded-2xl bg-white dark:bg-[#18181B] border border-neutral-200 dark:border-[#27272A] hover:border-[#6366F1] dark:hover:border-[#6366F1] text-left transition-all shadow-xs group cursor-pointer"
+        >
+          <div className="flex items-center justify-between mb-2">
+            <div className="w-8 h-8 rounded-xl bg-emerald-500/10 text-emerald-500 flex items-center justify-center">
+              <RotateCcw className="w-4 h-4" />
+            </div>
+            <span className={`text-xs font-mono font-bold ${dueRevisionsCount > 0 ? 'text-rose-500' : 'text-neutral-900 dark:text-white'}`}>
+              {dueRevisionsCount} Due Today →
+            </span>
+          </div>
+          <h3 className="text-sm font-bold text-neutral-900 dark:text-white uppercase tracking-wider">
+            Spaced Repetition Engine
+          </h3>
+          <p className="text-xs text-neutral-500 dark:text-[#A1A1AA] mt-0.5">
+            5-Stage revision cycles to ensure long-term retention.
+          </p>
+        </button>
+      </div>
 
       {/* ================= 3-COLUMN DASHBOARD GRID ================= */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -318,14 +397,14 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
             {todayTasks.length === 0 ? (
               <div className="bg-white dark:bg-[#18181B] border border-neutral-200 dark:border-[#27272A] p-6 rounded-2xl text-center shadow-xs">
                 <Calendar className="w-8 h-8 text-neutral-400 dark:text-[#71717A] mx-auto mb-2 opacity-50" />
-                <p className="text-xs font-bold text-neutral-900 dark:text-[#FAFAFA]">No tasks scheduled today</p>
-                <p className="text-[11px] text-neutral-500 dark:text-[#71717A] mt-0.5">Plan your upcoming study blocks in advance.</p>
+                <p className="text-xs font-bold text-neutral-900 dark:text-[#FAFAFA]">No study targets set for today</p>
+                <p className="text-[11px] text-neutral-500 dark:text-[#71717A] mt-0.5">Schedule daily syllabus targets to stay accountable.</p>
                 <button
                   onClick={onOpenPlanner}
                   className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-neutral-100 dark:bg-[#27272A] text-xs font-bold text-neutral-800 dark:text-[#FAFAFA] hover:bg-neutral-200 dark:hover:bg-[#3F3F46] cursor-pointer"
                 >
                   <Plus className="w-3.5 h-3.5" />
-                  <span>Add Task</span>
+                  <span>Add Daily Target</span>
                 </button>
               </div>
             ) : (
@@ -376,7 +455,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
           </div>
         </section>
 
-        {/* Center Column (col-span-5): Recent Sessions from Real Saved Data */}
+        {/* Center Column (col-span-5): Recent Sessions */}
         <section className="col-span-12 lg:col-span-5 flex flex-col gap-4">
           <div className="flex items-center justify-between">
             <h2 className="text-xs font-bold text-neutral-500 dark:text-[#A1A1AA] uppercase tracking-widest flex items-center gap-1.5">
@@ -397,7 +476,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
               <div className="p-8 text-center">
                 <BookOpen className="w-8 h-8 text-neutral-400 dark:text-[#71717A] mx-auto mb-2 opacity-40" />
                 <p className="text-xs font-bold text-neutral-900 dark:text-[#FAFAFA]">No study sessions logged today</p>
-                <p className="text-[11px] text-neutral-500 dark:text-[#71717A] mt-1">Tap the Start Studying button above to log your first block!</p>
+                <p className="text-[11px] text-neutral-500 dark:text-[#71717A] mt-1">Tap the Start Study Session button above to log your first block!</p>
               </div>
             ) : (
               todaySessions.slice(0, 5).map((sess) => (
@@ -448,7 +527,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
               </h2>
               <button
                 onClick={onOpenAnalytics}
-                className="text-[10px] text-[#6366F1] font-semibold hover:underline"
+                className="text-[10px] text-[#6366F1] font-semibold hover:underline cursor-pointer"
               >
                 Analytics
               </button>
@@ -493,7 +572,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
             <p className="text-xs text-[#C7D2FE] leading-relaxed line-clamp-3">
               {todayReview
                 ? `"${todayReview.recommendationForTomorrow}"`
-                : `"Maintain your daily streak of ${streak.current} days. Logging at least 30 minutes today keeps your momentum active!"`}
+                : `"Maintain your daily streak of ${streak.current} days. Target GS consistency and spaced revisions to lock in core retention!"`}
             </p>
 
             <button
